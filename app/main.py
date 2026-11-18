@@ -518,6 +518,14 @@ def investigate_deployment(namespace: str, deployment_name: str) -> dict:
             )
         ]
 
+        # Collect OOMKilled evidence separately so it takes
+        # precedence over the generic container failure diagnosis.
+        oom_findings = [
+            finding
+            for finding in container_failures
+            if finding.get("reason") == "OOMKilled"
+        ]
+
         # Collect failed scheduling evidence.
         scheduling_findings = [
             finding
@@ -615,6 +623,27 @@ def investigate_deployment(namespace: str, deployment_name: str) -> dict:
                     "repository, tag, registry availability and access "
                     "credentials. Registry evidence: "
                     + " | ".join(image_details)
+                )
+
+        elif oom_findings:
+            oom_details = list(dict.fromkeys(
+                finding.get("message", "")
+                for finding in oom_findings
+                if finding.get("message")
+            ))
+
+            probable_cause = (
+                "Deployment container was terminated due to memory "
+                "exhaustion. Kubernetes reported OOMKilled. This is the "
+                "primary failure; CrashLoopBackOff, if also present, is "
+                "a consequence of the container repeatedly restarting. "
+                "Inspect the container memory limit, actual memory usage "
+                "and application memory consumption."
+            )
+
+            if oom_details:
+                probable_cause += (
+                    " OOM evidence: " + " | ".join(oom_details)
                 )
 
         elif container_failures:
@@ -1465,7 +1494,16 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
             ])
 
         # --------------------------------------------------
-        # 3. CrashLoopBackOff
+        # 3. Identify OOMKilled before processing CrashLoopBackOff
+        # --------------------------------------------------
+        oom_findings = [
+            finding
+            for finding in deployment_findings
+            if finding.get("reason") == "OOMKilled"
+        ]
+
+        # --------------------------------------------------
+        # 4. CrashLoopBackOff
         # --------------------------------------------------
         crash_findings = [
             finding
@@ -1485,27 +1523,22 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
                 if finding.get("message"):
                     evidence.append(finding["message"])
 
-            recommendations.extend([
-                "Inspect the previous container logs using "
-                "'kubectl logs <pod-name> -n <namespace> "
-                "--previous -c <container-name>'.",
-                "Check the container exit code and last termination "
-                "reason using 'kubectl describe pod'.",
-                "Review application configuration, environment "
-                "variables, secrets and startup dependencies.",
-                "Check readiness and liveness probe configuration "
-                "if probes are contributing to repeated restarts.",
-            ])
+            if not oom_findings:
+                recommendations.extend([
+                    "Inspect the previous container logs using "
+                    "'kubectl logs <pod-name> -n <namespace> "
+                    "--previous -c <container-name>'.",
+                    "Check the container exit code and last termination "
+                    "reason using 'kubectl describe pod'.",
+                    "Review application configuration, environment "
+                    "variables, secrets and startup dependencies.",
+                    "Check readiness and liveness probe configuration "
+                    "if probes are contributing to repeated restarts.",
+                ])
 
         # --------------------------------------------------
-        # 4. OOMKilled
+        # 5. OOMKilled
         # --------------------------------------------------
-        oom_findings = [
-            finding
-            for finding in deployment_findings
-            if finding.get("reason") == "OOMKilled"
-        ]
-
         if oom_findings:
             matched_failures.append("OOMKilled")
 

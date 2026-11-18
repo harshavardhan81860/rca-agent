@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca-agent
+  namespace: rca-lab
+spec:
+  replicas: 1
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+
+  selector:
+    matchLabels:
+      app: rca-agent
+
+  template:
+    metadata:
+      labels:
+        app: rca-agent
+
+    spec:
+      serviceAccountName: rca-agent
+
+      containers:
+        - name: rca-agent
+          image: ghcr.io/harshavardhan81860/rca-agent:latest
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 8000
+
+          env:
+            - name: PROMETHEUS_URL
+              value: "http://kps-kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

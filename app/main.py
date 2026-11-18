@@ -509,6 +509,15 @@ def investigate_deployment(namespace: str, deployment_name: str) -> dict:
             if finding.get("reason") in container_failure_reasons
         ]
 
+        image_findings = [
+            finding
+            for finding in container_failures
+            if finding.get("reason") in (
+                "ImagePullBackOff",
+                "ErrImagePull",
+            )
+        ]
+
         # Collect failed scheduling evidence.
         scheduling_findings = [
             finding
@@ -548,6 +557,65 @@ def investigate_deployment(namespace: str, deployment_name: str) -> dict:
                 "capacity constraints. Scheduler evidence: "
                 + " | ".join(scheduling_messages)
             )
+
+        elif image_findings:
+            image_messages = " ".join(
+                finding.get("message", "")
+                for finding in image_findings
+            ).lower()
+
+            image_details = list(dict.fromkeys(
+                finding.get("message", "")
+                for finding in image_findings
+                if finding.get("message")
+            ))
+
+            if (
+                "not found" in image_messages
+                or "manifest unknown" in image_messages
+            ):
+                probable_cause = (
+                    "Container image pull failed because the requested "
+                    "image repository or tag does not exist in the "
+                    "container registry. Verify the image name, repository "
+                    "and tag in the Deployment specification. Registry "
+                    "evidence: " + " | ".join(image_details)
+                )
+
+            elif (
+                "unauthorized" in image_messages
+                or "authentication required" in image_messages
+                or "denied" in image_messages
+            ):
+                probable_cause = (
+                    "Container image pull failed because the registry "
+                    "rejected access or authentication. Verify registry "
+                    "credentials, imagePullSecrets and the ServiceAccount. "
+                    "Registry evidence: " + " | ".join(image_details)
+                )
+
+            elif any(term in image_messages for term in (
+                "timeout",
+                "i/o timeout",
+                "no such host",
+                "connection refused",
+                "network is unreachable",
+            )):
+                probable_cause = (
+                    "Container image pull failed because the registry "
+                    "could not be reached. Investigate DNS resolution, "
+                    "network connectivity, firewall rules and registry "
+                    "availability. Registry evidence: "
+                    + " | ".join(image_details)
+                )
+
+            else:
+                probable_cause = (
+                    "Container image pull failed. Verify the image "
+                    "repository, tag, registry availability and access "
+                    "credentials. Registry evidence: "
+                    + " | ".join(image_details)
+                )
 
         elif container_failures:
             failure_details = list(dict.fromkeys(
@@ -1036,6 +1104,15 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
                     if finding.get("reason") == "FailedScheduling"
                 ]
 
+                image_findings = [
+                    finding
+                    for finding in deployment_findings
+                    if finding.get("reason") in (
+                        "ImagePullBackOff",
+                        "ErrImagePull",
+                    )
+                ]
+
                 if scheduling_findings:
                     scheduling_text = " ".join(
                         finding.get("message", "")
@@ -1050,6 +1127,9 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
                         category = "Infrastructure"
                     else:
                         category = "Kubernetes"
+
+                elif image_findings:
+                    category = "Container Registry"
 
                 explanation = deployment_details["probable_cause"]
             else:

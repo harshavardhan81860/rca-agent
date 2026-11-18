@@ -1,7 +1,7 @@
 apiVersion: monitoring.coreos.com/v1alpha1
 kind: AlertmanagerConfig
 metadata:
-  name: rca-agent-webhook
+  name: rca-agent
   namespace: rca-lab
   labels:
     app: rca-agent
@@ -21,7 +21,7 @@ spec:
         value: "application|infrastructure"
 
   receivers:
-    - name: rca-agent-webhook
+    - name: rca-agent
       webhookConfigs:
-        - url: http://rca-agent.rca-lab.svc.cluster.local:8000/webhook/alerts
+        - url: http://rca-agent.rca-lab.svc.cluster.local:8000/webhook
           sendResolved: true

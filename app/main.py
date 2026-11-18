@@ -1093,6 +1093,12 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
             "Deployment has fewer available replicas than desired. "
             "Investigate pod scheduling, image pulls and resource limits.",
         ),
+        "KubePodPending": (
+            "Infrastructure",
+            "Kubernetes cannot schedule one or more pods. "
+            "Investigate node capacity, CPU and memory requests, "
+            "pod limits, taints and scheduling constraints.",
+        ),
     }
 
     category, explanation = categories.get(
@@ -1113,7 +1119,7 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
         investigation["node_details"] = investigate_node(node)
 
     # Evidence-based diagnosis for DeploymentReplicasMismatch.
-    if alert_name == "DeploymentReplicasMismatch":
+    if alert_name in ("DeploymentReplicasMismatch", "KubePodPending"):
         if namespace != "unknown" and deployment != "unknown":
             investigation["deployment_details"] = investigate_deployment(
                 namespace,
@@ -1186,7 +1192,7 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
         deployment_pods,
     )
     # Compare Deployment resource requests against node capacity.
-    if alert_name == "DeploymentReplicasMismatch":
+    if alert_name in ("DeploymentReplicasMismatch", "KubePodPending"):
         investigation["capacity_analysis"] = (
             analyze_deployment_capacity(
                 investigation["prometheus_metrics"],
@@ -1307,7 +1313,7 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
         "recommendations": [],
     }
 
-    if alert_name == "DeploymentReplicasMismatch":
+    if alert_name in ("DeploymentReplicasMismatch", "KubePodPending"):
         deployment_details = investigation.get(
             "deployment_details", {}
         )

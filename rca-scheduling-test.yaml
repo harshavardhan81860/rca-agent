@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca-scheduling-test
+  namespace: rca-lab
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rca-scheduling-test
+  template:
+    metadata:
+      labels:
+        app: rca-scheduling-test
+    spec:
+      containers:
+        - name: test-container
+          image: nginx:1.27
+          resources:
+            requests:
+              cpu: "1000"
+              memory: "1000Gi"

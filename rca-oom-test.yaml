@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca-oom-test
+  namespace: rca-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rca-oom-test
+  template:
+    metadata:
+      labels:
+        app: rca-oom-test
+    spec:
+      containers:
+        - name: oom-container
+          image: python:3.12-alpine
+          command:
+            - python
+            - -c
+            - "x = bytearray(200 * 1024 * 1024); import time; time.sleep(60)"
+          resources:
+            requests:
+              memory: "32Mi"
+            limits:
+              memory: "64Mi"

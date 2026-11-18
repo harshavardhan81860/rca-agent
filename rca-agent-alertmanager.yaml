@@ -1,0 +1,27 @@
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: rca-agent-webhook
+  namespace: rca-lab
+  labels:
+    app: rca-agent
+spec:
+  route:
+    receiver: rca-agent-webhook
+    groupBy:
+      - alertname
+      - namespace
+    groupWait: 10s
+    groupInterval: 30s
+    repeatInterval: 4h
+    continue: true
+    matchers:
+      - name: category
+        matchType: =~
+        value: "application|infrastructure"
+
+  receivers:
+    - name: rca-agent-webhook
+      webhookConfigs:
+        - url: http://rca-agent.rca-lab.svc.cluster.local:8000/webhook/alerts
+          sendResolved: true

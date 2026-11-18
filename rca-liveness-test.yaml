@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca-liveness-test
+  namespace: rca-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rca-liveness-test
+  template:
+    metadata:
+      labels:
+        app: rca-liveness-test
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27
+          ports:
+            - containerPort: 80
+          livenessProbe:
+            httpGet:
+              path: /wrong-health-check
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2

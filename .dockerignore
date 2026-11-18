@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.backup
+.env
+.env.*
+tests/
+monitoring/
+helm/
+argocd/
+rca-*.yaml

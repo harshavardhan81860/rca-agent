@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca-image-test
+  namespace: rca-lab
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rca-image-test
+  template:
+    metadata:
+      labels:
+        app: rca-image-test
+    spec:
+      containers:
+        - name: test-container
+          image: nginx:rca-agent-invalid-tag-2026
+          imagePullPolicy: Always

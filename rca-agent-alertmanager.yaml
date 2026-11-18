@@ -7,7 +7,7 @@ metadata:
     app: rca-agent
 spec:
   route:
-    receiver: rca-agent-webhook
+    receiver: rca-agent
     groupBy:
       - alertname
       - namespace
@@ -23,5 +23,5 @@ spec:
   receivers:
     - name: rca-agent
       webhookConfigs:
-        - url: http://rca-agent.rca-lab.svc.cluster.local:8000/webhook
+        - url: http://rca-agent.rca-lab.svc.cluster.local:8000/webhook/alerts
           sendResolved: true

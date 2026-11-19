@@ -113,6 +113,44 @@ def investigate_pod(namespace: str, pod_name: str) -> dict:
                     "exit_code": last_state.terminated.exit_code,
                 }
 
+            # Include configured health probes in the pod investigation.
+            container_spec = next(
+                (
+                    item for item in (pod.spec.containers or [])
+                    if item.name == container.name
+                ),
+                None,
+            )
+
+            probe_config = {}
+
+            if container_spec:
+                for probe_name in ("liveness", "readiness", "startup"):
+                    probe = getattr(
+                        container_spec,
+                        f"{probe_name}_probe",
+                        None,
+                    )
+
+                    if probe:
+                        http_get = probe.http_get
+
+                        probe_config[probe_name] = {
+                            "http_path": (
+                                http_get.path if http_get else None
+                            ),
+                            "http_port": (
+                                str(http_get.port) if http_get else None
+                            ),
+                            "http_scheme": (
+                                http_get.scheme if http_get else None
+                            ),
+                            "initial_delay_seconds": probe.initial_delay_seconds,
+                            "timeout_seconds": probe.timeout_seconds,
+                            "period_seconds": probe.period_seconds,
+                            "failure_threshold": probe.failure_threshold,
+                        }
+
             container_statuses.append({
                 "name": container.name,
                 "ready": container.ready,
@@ -121,6 +159,7 @@ def investigate_pod(namespace: str, pod_name: str) -> dict:
                 "reason": reason,
                 "message": message,
                 "last_state": last_state_details,
+                "probes": probe_config,
             })
 
 
@@ -1819,6 +1858,164 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
             "evidence": list(dict.fromkeys(evidence)),
             "recommendations": list(dict.fromkeys(recommendations)),
         }
+
+    # --------------------------------------------------
+    # 8. PodNotReady: readiness and health-probe remediation
+    # --------------------------------------------------
+    if alert_name == "PodNotReady":
+        pod_details = investigation.get("pod_details", {})
+        recent_events = pod_details.get("recent_events", [])
+        containers = pod_details.get("containers", [])
+
+        probe_events = []
+
+        for event in recent_events:
+            if not isinstance(event, dict):
+                continue
+
+            message = event.get("message", "") or ""
+            lower_message = message.lower()
+
+            for probe_type, phrase in (
+                ("Liveness", "liveness probe failed"),
+                ("Readiness", "readiness probe failed"),
+                ("Startup", "startup probe failed"),
+            ):
+                if phrase in lower_message:
+                    probe_events.append({
+                        "probe": probe_type,
+                        "reason": event.get("reason", ""),
+                        "message": message,
+                    })
+                    break
+
+        if probe_events:
+            evidence = []
+            recommendations = []
+            restart_count = 0
+
+            evidence.append(
+                f"Pod {pod} in namespace {namespace} is reported as not ready."
+            )
+
+            for container in containers:
+                name = container.get("name", "unknown")
+                probes = container.get("probes", {})
+
+                try:
+                    restart_count = max(
+                        restart_count,
+                        int(container.get("restart_count", 0) or 0),
+                    )
+                except (TypeError, ValueError):
+                    pass
+
+                evidence.append(
+                    f"Container {name}: ready={container.get('ready')}, "
+                    f"state={container.get('state')}, "
+                    f"restart_count={container.get('restart_count')}."
+                )
+
+                for probe_name, config in probes.items():
+                    if isinstance(config, dict):
+                        evidence.append(
+                            f"Container {name} {probe_name} probe "
+                            f"configuration: path={config.get('http_path')}, "
+                            f"port={config.get('http_port')}, "
+                            f"scheme={config.get('http_scheme')}."
+                        )
+
+            detected_probes = sorted({
+                item["probe"] for item in probe_events
+            })
+
+            for item in probe_events:
+                evidence.append(
+                    f"{item['probe']} probe failure: {item['message']}"
+                )
+
+            for probe_type in detected_probes:
+                if probe_type == "Liveness":
+                    recommendations.extend([
+                        "Verify that the liveness probe HTTP path points "
+                        "to a valid health endpoint.",
+                        "Verify the liveness probe port and HTTP scheme "
+                        "against the application container configuration.",
+                        "Check whether the health endpoint returns HTTP "
+                        "200 rather than 404 or another failure status.",
+                        "Review liveness probe timeoutSeconds, periodSeconds "
+                        "and failureThreshold.",
+                    ])
+
+                elif probe_type == "Readiness":
+                    recommendations.extend([
+                        "Verify the readiness probe HTTP path, port "
+                        "and expected response.",
+                        "Check whether the application and its required "
+                        "dependencies are ready to serve traffic.",
+                        "Review readiness probe timeoutSeconds, "
+                        "periodSeconds and failureThreshold.",
+                    ])
+
+                elif probe_type == "Startup":
+                    recommendations.extend([
+                        "Inspect application startup logs and initialization "
+                        "dependencies.",
+                        "Review startup probe initial delay, timeout, "
+                        "period and failure threshold.",
+                    ])
+
+            if any(
+                "statuscode: 404" in item["message"].lower()
+                or "status code: 404" in item["message"].lower()
+                for item in probe_events
+            ):
+                recommendations.append(
+                    "The HTTP health check returned 404. Correct the "
+                    "configured probe path to an endpoint that exists "
+                    "in the application. For this nginx test, verify "
+                    "whether '/' is the intended health-check path."
+                )
+
+            recommendations.extend([
+                "Inspect probe-related events using "
+                "'kubectl describe pod <pod-name> -n <namespace>'.",
+                "Verify the updated probe configuration before "
+                "applying any workload changes.",
+            ])
+
+            remediation = {
+                "status": "generated",
+                "priority": (
+                    "High"
+                    if severity.lower() == "critical"
+                    or (
+                        "Liveness" in detected_probes
+                        and restart_count >= 5
+                    )
+                    else "Medium"
+                ),
+                "automatic_action": False,
+                "reason": (
+                    "The agent detected Kubernetes health-probe failures "
+                    "from pod events and generated recommendations using "
+                    "the configured probe settings and container state."
+                ),
+                "evidence": list(dict.fromkeys(evidence)),
+                "recommendations": list(
+                    dict.fromkeys(recommendations)
+                ),
+            }
+
+            explanation = (
+                "Kubernetes events confirm "
+                + ", ".join(
+                    f"{probe} probe failure" for probe in detected_probes
+                )
+                + ". The agent inspected the pod's configured health "
+                "probes and recent Kubernetes events to identify the "
+                "likely cause."
+            )
 
     return {
         "alert_name": alert_name,

@@ -1666,6 +1666,160 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
                 ),
             }
 
+
+    # --------------------------------------------------
+    # 7. CrashLoopBackOff / frequent container restarts
+    # --------------------------------------------------
+    # These alerts investigate an individual pod, not a
+    # DeploymentReplicasMismatch alert. Therefore, use the
+    # pod investigation results rather than deployment_findings.
+    if alert_name in ("PodCrashLooping", "PodRestartingFrequently"):
+
+        pod_details = investigation.get("pod_details", {})
+        crash_diagnosis = investigation.get("crash_diagnosis", {})
+
+        evidence = []
+        recommendations = []
+        restart_count = 0
+        detected_oom = False
+
+        evidence.append(
+            f"Alert {alert_name} detected for pod {pod} "
+            f"in namespace {namespace}."
+        )
+
+        # Collect container state and termination details.
+        containers = pod_details.get("containers", [])
+
+        for container in containers:
+            container_name = container.get("name", "unknown")
+            reason = container.get("reason", "unknown")
+            last_state = container.get("last_state", {})
+            container_restarts = container.get("restart_count", 0)
+
+            try:
+                container_restarts = int(container_restarts or 0)
+            except (TypeError, ValueError):
+                container_restarts = 0
+
+            restart_count = max(restart_count, container_restarts)
+
+            evidence.append(
+                f"Container {container_name}: state "
+                f"{container.get('state', 'unknown')}, "
+                f"reason {reason}, restart count "
+                f"{container_restarts}."
+            )
+
+            if isinstance(last_state, dict):
+                last_reason = last_state.get("reason")
+                exit_code = last_state.get("exit_code")
+
+                if last_reason:
+                    evidence.append(
+                        f"Container {container_name} last termination "
+                        f"reason: {last_reason}."
+                    )
+
+                    if last_reason == "OOMKilled":
+                        detected_oom = True
+
+                if exit_code is not None:
+                    evidence.append(
+                        f"Container {container_name} last exit code: "
+                        f"{exit_code}."
+                    )
+
+            if reason == "OOMKilled":
+                detected_oom = True
+
+        # Include findings from the existing crash diagnosis.
+        diagnosis_findings = crash_diagnosis.get("findings", [])
+
+        for finding in diagnosis_findings:
+            if isinstance(finding, str):
+                evidence.append(finding)
+            elif isinstance(finding, dict):
+                message = finding.get("message")
+                if message:
+                    evidence.append(message)
+
+        diagnosis_restart_count = (
+            crash_diagnosis.get("kubernetes_restart_count", 0)
+        )
+
+        try:
+            restart_count = max(
+                restart_count,
+                int(diagnosis_restart_count or 0)
+            )
+        except (TypeError, ValueError):
+            pass
+
+        if restart_count:
+            evidence.append(
+                f"Kubernetes reports {restart_count} container restarts."
+            )
+
+        # Include useful Kubernetes event evidence.
+        recent_events = pod_details.get("recent_events", [])
+
+        for event in recent_events:
+            if isinstance(event, dict):
+                event_reason = event.get("reason", "")
+                event_message = event.get("message", "")
+
+                if event_reason or event_message:
+                    evidence.append(
+                        f"Kubernetes event: {event_reason} "
+                        f"{event_message}".strip()
+                    )
+
+        # Evidence-based recommendations.
+        recommendations.extend([
+            "Inspect the previous container logs using "
+            "'kubectl logs <pod-name> -n <namespace> "
+            "--previous -c <container-name>'.",
+            "Check the container exit code and last termination "
+            "reason using 'kubectl describe pod <pod-name> "
+            "-n <namespace>'.",
+            "Review the application entrypoint, startup command "
+            "and process exit conditions.",
+            "Verify environment variables, ConfigMaps, Secrets "
+            "and required application dependencies.",
+            "Review liveness, readiness and startup probe "
+            "configuration for incorrect paths, ports or "
+            "aggressive timeouts.",
+            "Inspect recent Kubernetes events for BackOff, "
+            "probe failures and container termination details.",
+        ])
+
+        if detected_oom:
+            recommendations.extend([
+                "Investigate whether the container is being terminated "
+                "because of memory exhaustion.",
+                "Review container memory requests, limits and historical "
+                "memory usage before changing resource settings.",
+            ])
+
+        remediation = {
+            "status": "generated",
+            "priority": (
+                "High"
+                if severity.lower() == "critical" or restart_count >= 5
+                else "Medium"
+            ),
+            "automatic_action": False,
+            "reason": (
+                "The agent detected repeated container failures and "
+                "generated recommendations using pod state, termination "
+                "details, restart counts and Kubernetes investigation "
+                "evidence."
+            ),
+            "evidence": list(dict.fromkeys(evidence)),
+            "recommendations": list(dict.fromkeys(recommendations)),
+        }
+
     return {
         "alert_name": alert_name,
         "severity": severity,

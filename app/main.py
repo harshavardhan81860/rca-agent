@@ -293,14 +293,72 @@ def investigate_node(node_name: str) -> dict:
                 "status": condition.status,
                 "reason": condition.reason,
                 "message": condition.message,
+                "last_heartbeat_time": (
+                    condition.last_heartbeat_time.isoformat()
+                    if condition.last_heartbeat_time else None
+                ),
+                "last_transition_time": (
+                    condition.last_transition_time.isoformat()
+                    if condition.last_transition_time else None
+                ),
             }
             for condition in node.status.conditions or []
         ]
 
+        node_events = v1.list_event_for_all_namespaces(
+            field_selector=(
+                f"involvedObject.kind=Node,"
+                f"involvedObject.name={node_name}"
+            )
+        )
+
+        recent_events = []
+
+        for event in node_events.items:
+            timestamp = (
+                event.last_timestamp
+                or event.event_time
+                or event.metadata.creation_timestamp
+            )
+
+            recent_events.append({
+                "type": event.type,
+                "reason": event.reason,
+                "message": event.message,
+                "count": event.count,
+                "source": (
+                    getattr(event, "reporting_component", None)
+                    or (
+                        event.source.component
+                        if event.source else None
+                    )
+                ),
+                "timestamp": (
+                    timestamp.isoformat() if timestamp else None
+                ),
+            })
+
+        recent_events.sort(
+            key=lambda item: item.get("timestamp") or "",
+            reverse=True,
+        )
+
         return {
             "status": "success",
             "node": node.metadata.name,
+            "provider_id": node.spec.provider_id,
+            "unschedulable": node.spec.unschedulable or False,
             "conditions": conditions,
+            "capacity": node.status.capacity or {},
+            "allocatable": node.status.allocatable or {},
+            "addresses": [
+                {
+                    "type": address.type,
+                    "address": address.address,
+                }
+                for address in node.status.addresses or []
+            ],
+            "recent_events": recent_events[:30],
         }
 
     except Exception as exc:
@@ -2016,6 +2074,185 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
                 "probes and recent Kubernetes events to identify the "
                 "likely cause."
             )
+
+    # --------------------------------------------------
+    # 9. NodeNotReady: worker-node health remediation
+    # --------------------------------------------------
+    if alert_name == "NodeNotReady":
+        node_details = investigation.get("node_details", {})
+        conditions = node_details.get("conditions", [])
+        recent_events = node_details.get("recent_events", [])
+
+        ready_condition = next(
+            (
+                condition for condition in conditions
+                if condition.get("type") == "Ready"
+            ),
+            None,
+        )
+
+        evidence = []
+        recommendations = []
+
+        if node_details.get("status") != "success":
+            node_error = node_details.get(
+                "error", "Node investigation did not return details."
+            )
+            evidence.append(
+                f"Node investigation failed for {node}: {node_error}"
+            )
+            recommendations.extend([
+                "Verify that the node name in the alert is correct.",
+                "Check RCA agent permissions to read Kubernetes nodes "
+                "and cluster events.",
+                "Check Kubernetes API connectivity from the RCA agent.",
+                "Retry the investigation after confirming node access.",
+            ])
+
+            remediation_status = "investigation_incomplete"
+            explanation = (
+                "The NodeNotReady alert was received, but the agent "
+                "could not retrieve live node details. The cause "
+                "cannot yet be confirmed."
+            )
+
+        else:
+            evidence.append(
+                f"Node investigated: {node_details.get('node', node)}."
+            )
+
+            if node_details.get("provider_id"):
+                evidence.append(
+                    f"Node provider ID: {node_details['provider_id']}."
+                )
+
+            evidence.append(
+                "Node unschedulable: "
+                f"{node_details.get('unschedulable', False)}."
+            )
+
+            if ready_condition:
+                evidence.append(
+                    "Node Ready condition: "
+                    f"status={ready_condition.get('status')}, "
+                    f"reason={ready_condition.get('reason')}, "
+                    f"message={ready_condition.get('message')}."
+                )
+            else:
+                evidence.append(
+                    "No Ready condition was returned for this node."
+                )
+
+            for condition in conditions:
+                condition_type = condition.get("type", "Unknown")
+                condition_status = condition.get("status")
+                if condition_type != "Ready" and condition_status == "True":
+                    evidence.append(
+                        f"Node condition {condition_type} is True: "
+                        f"{condition.get('reason')}: "
+                        f"{condition.get('message')}."
+                    )
+
+            for event in recent_events[:20]:
+                evidence.append(
+                    f"Node event: type={event.get('type')}, "
+                    f"reason={event.get('reason')}, "
+                    f"message={event.get('message')}."
+                )
+
+            ready_status = (
+                ready_condition.get("status")
+                if ready_condition else None
+            )
+
+            if ready_status == "True":
+                evidence.append(
+                    "Live Kubernetes state reports Ready=True even "
+                    "though the NodeNotReady alert is firing."
+                )
+                recommendations.extend([
+                    "Check whether the alert is stale or the node "
+                    "recovered before the RCA investigation.",
+                    "Verify the Prometheus "
+                    "kube_node_status_condition metric for this node.",
+                    "Check PrometheusRule evaluation and Alertmanager "
+                    "delivery timestamps.",
+                    "Continue monitoring node Ready condition and "
+                    "Kubernetes events.",
+                ])
+                explanation = (
+                    "The alert reports NodeNotReady, but the live "
+                    "Kubernetes API currently reports Ready=True. "
+                    "This may indicate node recovery, a stale alert, "
+                    "or a Prometheus metric mismatch."
+                )
+
+            elif ready_status == "False":
+                reason = ready_condition.get("reason") or "Unknown"
+                message = ready_condition.get("message") or (
+                    "No additional condition message was provided."
+                )
+                evidence.append(
+                    f"Node is NotReady. Reason: {reason}. "
+                    f"Message: {message}"
+                )
+                recommendations.extend([
+                    "Inspect node conditions and recent node events "
+                    "using kubectl describe node.",
+                    "Check kubelet health and whether the kubelet "
+                    "is reporting node status to the API server.",
+                    "Check worker-node network connectivity and "
+                    "communication with the Kubernetes control plane.",
+                    "Check EC2 instance status checks and system logs "
+                    "for the affected worker node.",
+                    "Review MemoryPressure, DiskPressure, PIDPressure "
+                    "and NetworkUnavailable conditions.",
+                    "Check node CPU, memory, disk and network metrics.",
+                    "Review recent node events for kubelet, "
+                    "container runtime and networking errors.",
+                    "Do not terminate or replace the node until "
+                    "workload availability and recovery options "
+                    "have been assessed.",
+                ])
+                explanation = (
+                    f"Kubernetes reports the node as NotReady. "
+                    f"The Ready condition reason is {reason}: {message}"
+                )
+
+            else:
+                evidence.append(
+                    "The live Ready condition is missing or has an "
+                    "unexpected status, so node health is inconclusive."
+                )
+                recommendations.extend([
+                    "Recheck the node Ready condition using "
+                    "kubectl describe node.",
+                    "Inspect node events and kubelet status.",
+                    "Verify Prometheus node-condition metrics.",
+                ])
+                explanation = (
+                    "The NodeNotReady alert was received, but the "
+                    "live Ready condition is missing or inconclusive."
+                )
+
+            remediation_status = "generated"
+
+        remediation = {
+            "status": remediation_status,
+            "priority": (
+                "High"
+                if severity.lower() == "critical"
+                else "Medium"
+            ),
+            "automatic_action": False,
+            "reason": (
+                "The agent inspected node conditions and Kubernetes "
+                "events and generated read-only investigation "
+                "recommendations. No node changes were performed."
+            ),
+            "evidence": list(dict.fromkeys(evidence)),
+            "recommendations": list(dict.fromkeys(recommendations)),
+        }
 
     return {
         "alert_name": alert_name,

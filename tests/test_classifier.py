@@ -27,3 +27,59 @@ def test_image_pull_failure():
         "ImagePullBackOff",
         "Image tag not found"
     ) == "Application"
+
+
+def test_database_postgres_connection_failure():
+    assert classify_incident(
+        "DatabaseConnectionError",
+        "PostgreSQL connection refused"
+    ) == "Database"
+
+
+def test_mysql_connection_pool_exhausted():
+    assert classify_incident(
+        "DatabaseError",
+        "MySQL connection pool exhausted"
+    ) == "Database"
+
+
+def test_generic_connection_refused():
+    assert classify_incident(
+        "ServiceConnectionError",
+        "Connection refused"
+    ) == "Networking"
+
+
+def test_dns_failure():
+    assert classify_incident(
+        "DNSFailure",
+        "DNS name resolution failed"
+    ) == "Networking"
+
+
+def test_persistent_volume_failure():
+    assert classify_incident(
+        "FailedMount",
+        "PersistentVolumeClaim could not be mounted"
+    ) == "Storage"
+
+
+def test_rbac_forbidden():
+    assert classify_incident(
+        "AccessDenied",
+        "Kubernetes RBAC forbidden"
+    ) == "Security"
+
+
+def test_application_exception():
+    assert classify_incident(
+        "ApplicationFailure",
+        "Unhandled application exception"
+    ) == "Application"
+
+
+def test_unknown_incident():
+    assert classify_incident(
+        "SomethingUnexpected",
+        "No matching evidence"
+    ) == "Unknown"

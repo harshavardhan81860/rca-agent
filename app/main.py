@@ -6,6 +6,7 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from kubernetes import client, config
+from app.classifier import analyze_classification, classify_incident
 
 
 PROMETHEUS_URL = os.getenv(
@@ -2254,11 +2255,33 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
             "recommendations": list(dict.fromkeys(recommendations)),
         }
 
+    # Run structured classification only when existing RCA rules
+    # could not identify the incident category.
+    classification_details = None
+
+    if category == "Unknown":
+        classifier_evidence = " ".join([
+            str(alert_name or ""),
+            str(annotations.get("summary", "")),
+            str(annotations.get("description", "")),
+            str(explanation or ""),
+        ])
+
+        classification_details = analyze_classification(
+            alert_name,
+            classifier_evidence,
+        )
+
+        if classification_details["category"] != "Unknown":
+            category = classification_details["category"]
+            explanation = classification_details["probable_cause"]
+
     return {
         "alert_name": alert_name,
         "severity": severity,
         "status": alert.get("status", "unknown"),
         "category": category,
+        "classification_details": classification_details,
         "namespace": namespace,
         "pod": pod,
         "node": node,

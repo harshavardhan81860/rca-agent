@@ -33,11 +33,11 @@ def analyze_classification(reason, message=""):
         "too many pods", "failedscheduling",
         "node notready", "node not ready",
         "nodepressure", "diskpressure", "memorypressure",
+        "imagepullbackoff", "errimagepull",
     ]
 
     application_terms = [
         "crashloopbackoff", "oomkilled",
-        "imagepullbackoff", "errimagepull",
         "application exception", "application error",
         "container exited", "non-zero exit", "exit code",
         "liveness probe failed", "readiness probe failed",

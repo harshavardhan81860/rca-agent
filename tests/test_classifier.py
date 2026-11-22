@@ -26,7 +26,7 @@ def test_image_pull_failure():
     assert classify_incident(
         "ImagePullBackOff",
         "Image tag not found"
-    ) == "Application"
+    ) == "Infrastructure"
 
 
 def test_database_postgres_connection_failure():

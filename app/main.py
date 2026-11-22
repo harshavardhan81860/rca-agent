@@ -2255,13 +2255,41 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
             "recommendations": list(dict.fromkeys(recommendations)),
         }
 
-    # Always run structured classification so every alert includes
-    # classification details, even when an existing RCA rule matched.
+    # Build classifier evidence from the alert and actual investigation.
+    # Do not include the generated explanation: it may mention excluded
+    # causes such as "not a database failure", creating false matches.
+    investigation_evidence = []
+
+    crash_diagnosis = investigation.get("crash_diagnosis", {})
+    if isinstance(crash_diagnosis, dict):
+        investigation_evidence.extend(
+            str(item) for item in crash_diagnosis.get("findings", [])
+        )
+
+    pod_details = investigation.get("pod_details", {})
+    if isinstance(pod_details, dict):
+        for container in pod_details.get("containers", []):
+            investigation_evidence.append(str(container.get("state", "")))
+            investigation_evidence.append(str(container.get("reason", "")))
+            investigation_evidence.append(str(container.get("last_state", {})))
+
+        for log_entry in pod_details.get("container_logs", []):
+            investigation_evidence.append(
+                str(log_entry.get("current_logs", {}).get("logs", ""))
+            )
+            investigation_evidence.append(
+                str(log_entry.get("previous_logs", {}).get("logs", ""))
+            )
+
+        for event in pod_details.get("recent_events", []):
+            investigation_evidence.append(str(event.get("reason", "")))
+            investigation_evidence.append(str(event.get("message", "")))
+
     classifier_evidence = " ".join([
         str(alert_name or ""),
         str(annotations.get("summary", "")),
         str(annotations.get("description", "")),
-        str(explanation or ""),
+        " ".join(investigation_evidence),
     ])
 
     classification_details = analyze_classification(

@@ -2255,26 +2255,33 @@ def analyze_alert(alert: dict[str, Any]) -> dict:
             "recommendations": list(dict.fromkeys(recommendations)),
         }
 
-    # Run structured classification only when existing RCA rules
-    # could not identify the incident category.
-    classification_details = None
+    # Always run structured classification so every alert includes
+    # classification details, even when an existing RCA rule matched.
+    classifier_evidence = " ".join([
+        str(alert_name or ""),
+        str(annotations.get("summary", "")),
+        str(annotations.get("description", "")),
+        str(explanation or ""),
+    ])
 
+    classification_details = analyze_classification(
+        alert_name,
+        classifier_evidence,
+    )
+
+    # Use the structured classifier as a fallback only.
+    # Preserve categories and explanations established by existing RCA rules.
     if category == "Unknown":
-        classifier_evidence = " ".join([
-            str(alert_name or ""),
-            str(annotations.get("summary", "")),
-            str(annotations.get("description", "")),
-            str(explanation or ""),
-        ])
-
-        classification_details = analyze_classification(
-            alert_name,
-            classifier_evidence,
-        )
-
         if classification_details["category"] != "Unknown":
             category = classification_details["category"]
             explanation = classification_details["probable_cause"]
+
+    # Fill the top-level node from live Kubernetes pod investigation
+    # when the incoming alert did not contain a node label.
+    if not node or node == "unknown":
+        pod_node = investigation.get("pod_details", {}).get("node")
+        if pod_node:
+            node = pod_node
 
     return {
         "alert_name": alert_name,

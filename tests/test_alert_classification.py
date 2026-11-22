@@ -76,7 +76,8 @@ def test_node_not_ready_keeps_infrastructure_category(monkeypatch):
     result = main.analyze_alert(alert)
 
     assert result["category"] == "Infrastructure"
-    assert result["classification_details"] is None
+    assert result["classification_details"] is not None
+    assert result["classification_details"]["category"] == "Database"
 
 
 def test_pod_not_ready_keeps_kubernetes_category(monkeypatch):
@@ -97,4 +98,47 @@ def test_pod_not_ready_keeps_kubernetes_category(monkeypatch):
     result = main.analyze_alert(alert)
 
     assert result["category"] == "Kubernetes"
-    assert result["classification_details"] is None
+    assert result["classification_details"] is not None
+    assert result["classification_details"]["category"] == "Database"
+
+
+
+def test_top_level_node_is_populated_from_pod_investigation(monkeypatch):
+    prepare_alert_test(monkeypatch)
+
+    monkeypatch.setattr(
+        main,
+        "investigate_pod",
+        lambda namespace, pod: {
+            "status": "success",
+            "pod": pod,
+            "namespace": namespace,
+            "phase": "Pending",
+            "node": "worker-node-test",
+            "pod_ready": False,
+            "containers": [],
+            "recent_events": [],
+        },
+    )
+
+    alert = {
+        "status": "firing",
+        "labels": {
+            "alertname": "PodNotReady",
+            "severity": "warning",
+            "namespace": "rca-lab",
+            "pod": "test-pod",
+        },
+        "annotations": {
+            "summary": "Pod is not ready",
+            "description": "Pod readiness check failed",
+        },
+    }
+
+    result = main.analyze_alert(alert)
+
+    assert result["node"] == "worker-node-test"
+    assert result["investigation"]["pod_details"]["node"] == "worker-node-test"
+    assert result["category"] == "Kubernetes"
+    assert result["classification_details"] is not None
+    assert result["remediation"]["automatic_action"] is False

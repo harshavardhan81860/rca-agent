@@ -1,12 +1,27 @@
 """Local notification service for the Kubernetes RCA agent.
 
-This implementation records notifications in memory.
-It does not send email, Slack messages, or make network requests.
+Notifications are stored in memory only.
+No email, Slack messages, network calls, or automatic remediation.
 """
 
+import os
+import time
 from copy import deepcopy
 from threading import Lock
 from typing import Any
+
+
+SEVERITY_LEVELS = {
+    "info": 1,
+    "warning": 2,
+    "critical": 3,
+}
+
+DEFAULT_MINIMUM_SEVERITY = "warning"
+DEFAULT_DEDUPE_SECONDS = 600
+
+_state_lock = Lock()
+_last_notification_at: dict[tuple[str, str, str], float] = {}
 
 
 class LocalNotificationSink:
@@ -37,6 +52,48 @@ class LocalNotificationSink:
 
 
 local_sink = LocalNotificationSink()
+
+
+def _get_minimum_severity() -> str:
+    """Read the configured minimum notification severity."""
+
+    configured = os.getenv(
+        "RCA_NOTIFICATION_MIN_SEVERITY",
+        DEFAULT_MINIMUM_SEVERITY,
+    ).strip().lower()
+
+    if configured not in SEVERITY_LEVELS:
+        return DEFAULT_MINIMUM_SEVERITY
+
+    return configured
+
+
+def _get_dedupe_seconds() -> int:
+    """Read the duplicate suppression cooldown."""
+
+    configured = os.getenv(
+        "RCA_NOTIFICATION_DEDUPE_SECONDS",
+        str(DEFAULT_DEDUPE_SECONDS),
+    )
+
+    try:
+        seconds = int(configured)
+    except (TypeError, ValueError):
+        return DEFAULT_DEDUPE_SECONDS
+
+    return max(0, seconds)
+
+
+def _get_alert_fingerprint(
+    notification: dict[str, Any],
+) -> tuple[str, str, str]:
+    """Build a stable identity for the same alert and affected pod."""
+
+    return (
+        str(notification.get("alert_name") or "unknown").strip().lower(),
+        str(notification.get("namespace") or "unknown").strip().lower(),
+        str(notification.get("pod") or "unknown").strip().lower(),
+    )
 
 
 def build_notification(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -70,12 +127,9 @@ def build_notification(analysis: dict[str, Any]) -> dict[str, Any]:
 
 
 def send_notification(analysis: dict[str, Any]) -> dict[str, Any]:
-    """Record a notification for a firing alert.
+    """Filter, deduplicate, and record a firing alert locally."""
 
-    This function never performs remediation or external network calls.
-    """
-
-    status = str(analysis.get("status", "unknown")).lower()
+    status = str(analysis.get("status", "unknown")).strip().lower()
 
     if status != "firing":
         return {
@@ -84,7 +138,60 @@ def send_notification(analysis: dict[str, Any]) -> dict[str, Any]:
         }
 
     notification = build_notification(analysis)
-    return local_sink.send(notification)
+
+    severity = str(notification.get("severity") or "unknown").strip().lower()
+    minimum_severity = _get_minimum_severity()
+
+    severity_level = SEVERITY_LEVELS.get(severity)
+    minimum_level = SEVERITY_LEVELS[minimum_severity]
+
+    if severity_level is None or severity_level < minimum_level:
+        return {
+            "status": "skipped",
+            "filter": "severity",
+            "reason": (
+                f"Alert severity '{severity}' does not meet "
+                f"the minimum configured severity '{minimum_severity}'."
+            ),
+        }
+
+    cooldown = _get_dedupe_seconds()
+    fingerprint = _get_alert_fingerprint(notification)
+
+    with _state_lock:
+        now = time.monotonic()
+
+        if cooldown > 0:
+            # Remove expired fingerprints to prevent unbounded growth.
+            expired = [
+                key
+                for key, last_sent in _last_notification_at.items()
+                if now - last_sent >= cooldown
+            ]
+
+            for key in expired:
+                del _last_notification_at[key]
+
+            previous_sent = _last_notification_at.get(fingerprint)
+
+            if previous_sent is not None:
+                elapsed = now - previous_sent
+
+                if elapsed < cooldown:
+                    return {
+                        "status": "suppressed",
+                        "reason": (
+                            "Duplicate alert suppressed during "
+                            "the configured cooldown period."
+                        ),
+                        "retry_after_seconds": round(
+                            cooldown - elapsed, 2
+                        ),
+                    }
+
+            _last_notification_at[fingerprint] = now
+
+        return local_sink.send(notification)
 
 
 def get_notifications() -> list[dict[str, Any]]:
@@ -94,6 +201,8 @@ def get_notifications() -> list[dict[str, Any]]:
 
 
 def clear_notifications() -> None:
-    """Clear the local receiver. Intended for tests and local development."""
+    """Reset notifications and duplicate tracking for tests."""
 
-    local_sink.clear()
+    with _state_lock:
+        local_sink.clear()
+        _last_notification_at.clear()

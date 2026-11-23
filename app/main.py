@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from kubernetes import client, config
 from app.classifier import analyze_classification, classify_incident
+from app.notifications import send_notification
 
 
 PROMETHEUS_URL = os.getenv(
@@ -2364,9 +2365,21 @@ def receive_alerts(payload: AlertmanagerWebhook):
         }
 
         if alert_status == "firing":
+            rca_result = analyze_alert(alert)
+
+            # Notification delivery must never interrupt RCA processing.
+            try:
+                notification_result = send_notification(rca_result)
+            except Exception:
+                notification_result = {
+                    "status": "failed",
+                    "reason": "Local notification delivery failed.",
+                }
+
             results.append({
                 **alert_info,
-                "analysis": analyze_alert(alert),
+                "analysis": rca_result,
+                "notification": notification_result,
             })
 
         elif alert_status == "resolved":
